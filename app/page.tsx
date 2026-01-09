@@ -60,7 +60,10 @@ export default function Home() {
           preview: result.preview,
         }),
       })
-      if (!res.ok) throw new Error('PDF-Download fehlgeschlagen')
+      if (!res.ok) {
+        const errorData = await res.json()
+        throw new Error(errorData?.error || `HTTP ${res.status}`)
+      }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -69,7 +72,7 @@ export default function Home() {
       a.click()
       URL.revokeObjectURL(url)
     } catch (err) {
-      alert('Fehler beim PDF-Download: ' + String(err))
+      alert('PDF-Download Fehler: ' + String(err))
     } finally {
       setDownloadLoading(false)
     }
