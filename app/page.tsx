@@ -57,6 +57,7 @@ export default function Home() {
           sumHours: result.sumHours,
           averageHours: result.averageHours,
           invalidValues: result.invalidValues,
+          preview: result.preview,
         }),
       })
       if (!res.ok) throw new Error('PDF-Download fehlgeschlagen')
