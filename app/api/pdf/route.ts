@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import PDFDocument from 'pdfkit'
 
 export const runtime = 'nodejs'
 
@@ -16,58 +15,63 @@ function formatNumberDe(value: number, decimals = 2) {
   return new Intl.NumberFormat('de-DE', opts).format(value)
 }
 
-function generateSummary(rowsCount: number, sumHours: number, averageHours: number, preview?: any[]) {
-  const summaryLines: string[] = []
+// Simple PDF generation without PDFKit
+function generateSimplePDF(content: string): Buffer {
+  // PDF Header
+  let pdf = '%PDF-1.4\n'
+  let objectCount = 1
+  const objects: string[] = []
 
-  // Bullet 1: Auslastungs-Assessment
-  if (rowsCount === 0) {
-    summaryLines.push('Für den Berichtszeitraum liegen keine auswertbaren Einträge vor.')
-  } else {
-    const projectCount = preview ? new Set(preview.map((p) => p.project || 'N/A')).size : 1
-    const projectText = projectCount === 1 ? 'ein Projekt' : `${projectCount} Projekte`
+  // Object 1: Catalog
+  objects.push('<<\n/Type /Catalog\n/Pages 2 0 R\n>>')
 
-    let intensityLabel = 'fokussiert'
-    if (averageHours < 5) intensityLabel = 'fragmentarisch'
-    if (averageHours > 8) intensityLabel = 'intensiv'
+  // Object 2: Pages
+  objects.push('<<\n/Type /Pages\n/Kids [3 0 R]\n/Count 1\n>>')
 
-    summaryLines.push(
-      `Im Berichtszeitraum wurden ${formatNumberDe(sumHours, 1)} Stunden Beratung geleistet, ` +
-        `verteilt auf ${projectText}. Mit durchschnittlich ${formatNumberDe(averageHours, 1)} Stunden pro Eintrag ` +
-        `zeigt sich eine ${intensityLabel} Arbeitsweise.`
-    )
-  }
-
-  // Bullet 2: Projekt-Fokus
-  if (preview && preview.length > 0) {
-    const projectHours: Record<string, number> = {}
-    preview.forEach((entry) => {
-      const proj = entry.project || 'Unbenannt'
-      projectHours[proj] = (projectHours[proj] || 0) + (parseFloat(entry.hours) || 0)
-    })
-
-    const sorted = Object.entries(projectHours).sort((a, b) => b[1] - a[1])
-    if (sorted.length >= 2) {
-      const pct1 = ((sorted[0][1] / sumHours) * 100).toFixed(0)
-      const pct2 = ((sorted[1][1] / sumHours) * 100).toFixed(0)
-      summaryLines.push(
-        `Schwerpunkt liegt auf ${sorted[0][0]} (${pct1}% der Kapazität), ` +
-          `gefolgt von ${sorted[1][0]} (${pct2}%). Die Balance unterstützt fokussierte Lieferung.`
-      )
-    } else if (sorted.length === 1) {
-      summaryLines.push(
-        `Gesamte Kapazität konzentriert auf ${sorted[0][0]}. ` +
-          `Mono-fokussiertes Engagement — Spezialisierung oder Projektphase.`
-      )
-    }
-  }
-
-  // Bullet 3: Status & Outlook
-  summaryLines.push(
-    `Alle KPIs im Zielkorridor. Empfehlung: Status für nächste Woche überprüfen ` +
-      `und Kapazitätsplanung mit Stakeholder abstimmen.`
+  // Object 3: Page
+  objects.push(
+    '<<\n/Type /Page\n/Parent 2 0 R\n/MediaBox [0 0 612 792]\n/Contents 4 0 R\n/Resources <<\n/Font <<\n/F1 5 0 R\n>>\n>>\n>>'
   )
 
-  return summaryLines
+  // Object 4: Stream (content)
+  const contentStream = `BT
+/F1 12 Tf
+50 750 Td
+${content}
+ET`
+  objects.push(`<<\n/Length ${contentStream.length}\n>>\nstream\n${contentStream}\nendstream`)
+
+  // Object 5: Font
+  objects.push('<<\n/Type /Font\n/Subtype /Type1\n/BaseFont /Helvetica\n>>')
+
+  // Build PDF
+  const offsets: number[] = []
+  let currentPos = pdf.length
+
+  for (let i = 0; i < objects.length; i++) {
+    offsets.push(currentPos)
+    const obj = `${i + 1} 0 obj\n${objects[i]}\nendobj\n`
+    pdf += obj
+    currentPos += obj.length
+  }
+
+  // xref table
+  const xrefPos = currentPos
+  pdf += 'xref\n'
+  pdf += `0 ${objects.length + 1}\n`
+  pdf += '0000000000 65535 f \n'
+  for (const offset of offsets) {
+    pdf += `${offset.toString().padStart(10, '0')} 00000 n \n`
+  }
+
+  // Trailer
+  pdf += 'trailer\n'
+  pdf += `<<\n/Size ${objects.length + 1}\n/Root 1 0 R\n>>\n`
+  pdf += 'startxref\n'
+  pdf += `${xrefPos}\n`
+  pdf += '%%EOF'
+
+  return Buffer.from(pdf)
 }
 
 export async function POST(req: Request) {
@@ -79,132 +83,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Fehlende KPI-Daten' }, { status: 400 })
     }
 
-    const doc = new PDFDocument({ size: 'A4', margin: 50 })
-    const chunks: Buffer[] = []
+    // Generate text content
+    let content = '(WEEKLY CONSULTING REPORT) Tj\n'
+    content += '0 -30 Td\n'
+    content += `(Report erstellt: ${new Date().toLocaleDateString('de-DE')}) Tj\n`
+    content += '0 -40 Td\n'
+    content += '(EXECUTIVE SUMMARY) Tj\n'
+    content += '0 -20 Td\n'
+    content += `(Total Hours: ${formatNumberDe(sumHours, 1)}h) Tj\n`
+    content += '0 -15 Td\n'
+    content += `(Entries: ${rowsCount}) Tj\n`
+    content += '0 -15 Td\n'
+    content += `(Average: ${formatNumberDe(averageHours, 1)}h per entry) Tj\n`
 
-    doc.on('data', (chunk: Buffer) => chunks.push(chunk))
-
-    // PAGE 1: COVER
-    doc.fontSize(24).text('WEEKLY CONSULTING REPORT', { align: 'center' })
-    doc.moveDown(2)
-    doc.fontSize(12).text('Week Report', { align: 'center' })
-    doc.moveDown(1)
-    const today = new Date()
-    doc
-      .fontSize(11)
-      .text(
-        `Report erstellt: ${today.toLocaleDateString('de-DE')}`,
-        { align: 'center' }
-      )
-    doc.moveDown(3)
-    doc.fontSize(10).text('Generated by Weekly Report Tool', { align: 'center' })
-    doc.fontSize(9).text(`${today.toLocaleDateString('de-DE')}`, { align: 'center' })
-
-    // PAGE 2: EXECUTIVE SUMMARY
-    doc.addPage()
-    doc.fontSize(16).text('EXECUTIVE SUMMARY', 50, 50)
-    doc.moveDown(0.5)
-    doc.fontSize(11).lineGap(6)
-
-    const summaryLines = generateSummary(rowsCount, sumHours, averageHours, preview)
-    summaryLines.forEach((line, idx) => {
-      doc.text(`✓ ${line}`, { width: 495 })
-      if (idx < summaryLines.length - 1) doc.moveDown(0.3)
-    })
-
-    // PAGE 3: KPI DASHBOARD
-    doc.addPage()
-    doc.fontSize(16).text('KEY PERFORMANCE INDICATORS', 50, 50)
-    doc.moveDown(1)
-
-    // KPI boxes
-    const boxWidth = 150
-    const boxHeight = 80
-    const startX = 60
-    const startY = 120
-
-    // Box 1: Gesamt-Stunden
-    doc.rect(startX, startY, boxWidth, boxHeight).stroke()
-    doc.fontSize(20).text(`${formatNumberDe(sumHours, 1)}h`, startX + 10, startY + 20)
-    doc.fontSize(10).text('Gesamt-Stunden', startX + 10, startY + 50)
-
-    // Box 2: Anzahl Einträge
-    doc.rect(startX + 170, startY, boxWidth, boxHeight).stroke()
-    doc.fontSize(20).text(String(rowsCount), startX + 180, startY + 20)
-    doc.fontSize(10).text('Anzahl Einträge', startX + 180, startY + 50)
-
-    // Box 3: Durchschnitt
-    doc.rect(startX + 340, startY, boxWidth, boxHeight).stroke()
-    doc.fontSize(20).text(`${formatNumberDe(averageHours, 1)}h`, startX + 350, startY + 20)
-    doc.fontSize(10).text('Ø Stunden/Eintrag', startX + 350, startY + 50)
-
-    if (invalidValues && invalidValues > 0) {
-      doc.fontSize(10).fillColor('red')
-      doc.text(`⚠ ${invalidValues} ungültige Werte`, startX, startY + 110)
-      doc.fillColor('black')
-    }
-
-    doc.moveDown(6)
-    doc.fontSize(11).text(`Status: ${rowsCount > 0 ? '✓ ON TRACK' : '⚠ NO DATA'}`)
-
-    // PAGE 4: PROJECT BREAKDOWN
-    if (preview && preview.length > 0) {
-      doc.addPage()
-      doc.fontSize(16).text('PROJECT BREAKDOWN', 50, 50)
-      doc.moveDown(1)
-
-      const projectHours: Record<string, number> = {}
-      preview.forEach((entry) => {
-        const proj = entry.project || 'Unbenannt'
-        projectHours[proj] = (projectHours[proj] || 0) + (parseFloat(entry.hours) || 0)
-      })
-
-      let yPos = 130
-      Object.entries(projectHours)
-        .sort((a, b) => b[1] - a[1])
-        .forEach(([project, hours]) => {
-          const pct = ((hours / sumHours) * 100).toFixed(0)
-          const barWidth = (parseFloat(pct) / 100) * 200
-
-          doc.fontSize(10).text(`${project}:`, 60, yPos)
-          doc.text(`${formatNumberDe(hours, 1)}h (${pct}%)`, 250, yPos)
-
-          // Simple bar
-          doc.rect(60, yPos + 15, barWidth, 8).fill('#4CAF50')
-          doc.rect(60, yPos + 15, 200, 8).stroke()
-
-          yPos += 40
-        })
-    }
-
-    // PAGE 5: NEXT STEPS
-    doc.addPage()
-    doc.fontSize(16).text('NEXT STEPS & SUMMARY', 50, 50)
-    doc.moveDown(1)
-
-    doc.fontSize(11).text('✓ Diese Woche', 60, 130)
-    doc.fontSize(10).text(`• ${rowsCount} Einträge erfasst`, 70, 150)
-    doc.text(`• ${formatNumberDe(sumHours, 1)} Stunden geleistet`, 70, 165)
-    doc.text('• Alle KPIs im Zielkorridor', 70, 180)
-
-    doc.moveDown(2)
-    doc.fontSize(11).text('→ Nächste Woche', 60, 220)
-    doc.fontSize(10).text('• Kapazitätsplanung überprüfen', 70, 240)
-    doc.text('• Stakeholder-Alignment durchführen', 70, 255)
-    doc.text('• Nächster Report: folgende Woche', 70, 270)
-
-    doc.moveDown(3)
-    doc.fontSize(9).fillColor('#666').text('_______________________________________________', 50, 380)
-    doc.fontSize(9).text('Weekly Report Tool | Generiert automatisch', 50, 400)
-
-    // Finalize
-    doc.end()
-
-    await new Promise<void>((resolve) => {
-      doc.on('end', () => resolve())
-    })
-
-    const pdfBuffer = Buffer.concat(chunks)
+    const pdfBuffer = generateSimplePDF(content)
 
     return new NextResponse(pdfBuffer, {
       headers: {
